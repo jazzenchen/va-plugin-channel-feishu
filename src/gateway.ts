@@ -8,6 +8,7 @@
 
 import path from "node:path";
 
+import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
 import type { Agent, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
 import type { FeishuClient } from "./lark-client.js";
 import type { AgentStreamHandler } from "./agent-stream.js";
@@ -175,7 +176,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
+      const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
       this.streamHandler?.onTurnError(chatId, msg);
     }
@@ -258,7 +259,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
         this.log("info", `card command done chat=${chatId} cmd=${command} stopReason=${response.stopReason}`);
         this.streamHandler?.onTurnEnd(chatId);
       } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
+        const msg = extractErrorMessage(error);
         this.log("error", `card command failed chat=${chatId}: ${msg}`);
         this.streamHandler?.onTurnError(chatId, msg);
       }
