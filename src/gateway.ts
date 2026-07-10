@@ -127,7 +127,6 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     if (!shouldHandleInboundMessage({
       chatType: msg.chat_type,
       mentionedBot,
-      text: result.content,
     })) {
       this.log("debug", `group message ignored without bot mention chat=${chatId}`);
       return;
