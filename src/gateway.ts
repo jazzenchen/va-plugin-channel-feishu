@@ -16,6 +16,7 @@ import type { FeishuMessageEvent, FeishuReactionCreatedEvent, MentionInfo } from
 import type { ConvertContext } from "./messaging/converters/types.js";
 import { convertMessageContent } from "./messaging/converters/content-converter.js";
 import { MessageDedup } from "./messaging/inbound/dedup.js";
+import { shouldHandleInboundMessage } from "./messaging/inbound/policy.js";
 import { downloadMessageResource } from "./messaging/media-download.js";
 import type { DownloadedResource } from "./messaging/media-download.js";
 
@@ -121,6 +122,16 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
 
     // Convert message content using the full converter system
     const result = await convertMessageContent(msg.message_type, msg.content, ctx);
+
+    const mentionedBot = [...mentionsMap.values()].some((mention) => mention.isBot);
+    if (!shouldHandleInboundMessage({
+      chatType: msg.chat_type,
+      mentionedBot,
+      text: result.content,
+    })) {
+      this.log("debug", `group message ignored without bot mention chat=${chatId}`);
+      return;
+    }
 
     // Download media resources (images, files, etc.)
     const downloaded: DownloadedResource[] = [];
