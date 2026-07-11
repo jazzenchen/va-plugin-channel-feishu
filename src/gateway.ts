@@ -24,7 +24,10 @@ import { MessageDedup } from "./messaging/inbound/dedup.js";
 import { shouldHandleInboundMessage } from "./messaging/inbound/policy.js";
 import { downloadMessageResource } from "./messaging/media-download.js";
 import type { DownloadedResource } from "./messaging/media-download.js";
-import { createFeishuCallbackContext } from "./route-context.js";
+import {
+  createFeishuCallbackContext,
+  serializeFeishuCallbackData,
+} from "./route-context.js";
 
 // ---------------------------------------------------------------------------
 // Gateway
@@ -345,7 +348,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
           chatId,
           callbackId: `card_${Date.now()}`,
           sender: { id: event.operator?.open_id ?? "" },
-          data: event.action?.value ?? {},
+          data: serializeFeishuCallbackData(event.action?.value),
           messageId,
           "va.channel": callbackContext,
         })

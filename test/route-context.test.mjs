@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createFeishuCallbackContext } from "../dist/route-context.js";
+import {
+  createFeishuCallbackContext,
+  serializeFeishuCallbackData,
+} from "../dist/route-context.js";
 
 test("Feishu callback metadata preserves every available route field", () => {
   assert.deepEqual(
@@ -25,4 +28,12 @@ test("Feishu callback metadata preserves every available route field", () => {
       addressedBy: "callback",
     },
   );
+});
+
+test("Feishu callback data stays a host-consumable string", () => {
+  assert.equal(
+    serializeFeishuCallbackData({ action: "approve", count: 2 }),
+    '{"action":"approve","count":2}',
+  );
+  assert.equal(serializeFeishuCallbackData(undefined), "{}");
 });

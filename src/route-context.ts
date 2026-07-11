@@ -22,3 +22,9 @@ export function createFeishuCallbackContext(
     addressedBy: "callback",
   };
 }
+
+export function serializeFeishuCallbackData(
+  value: Record<string, unknown> | undefined,
+): string {
+  return JSON.stringify(value ?? {});
+}
