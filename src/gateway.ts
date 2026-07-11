@@ -24,6 +24,7 @@ import { MessageDedup } from "./messaging/inbound/dedup.js";
 import { shouldHandleInboundMessage } from "./messaging/inbound/policy.js";
 import { downloadMessageResource } from "./messaging/media-download.js";
 import type { DownloadedResource } from "./messaging/media-download.js";
+import { createFeishuCallbackContext } from "./route-context.js";
 
 // ---------------------------------------------------------------------------
 // Gateway
@@ -241,9 +242,16 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       action?: { value?: Record<string, unknown>; tag?: string };
       operator?: { open_id?: string };
       // V2 puts chat/message IDs in context, V1 had them at top level
-      context?: { open_chat_id?: string; open_message_id?: string };
+      context?: {
+        open_chat_id?: string;
+        open_message_id?: string;
+        open_thread_id?: string;
+        chat_type?: "p2p" | "group";
+      };
       open_chat_id?: string;
       open_message_id?: string;
+      open_thread_id?: string;
+      chat_type?: "p2p" | "group";
     };
 
     const chatId = event.context?.open_chat_id ?? event.open_chat_id ?? "";
@@ -320,6 +328,18 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       }
     } else {
       // Generic callback (non-command button)
+      const callbackContext = createFeishuCallbackContext({
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId,
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
+      });
       this.agent
         .extNotification?.("_va/callback", {
           chatId,
@@ -327,6 +347,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
           sender: { id: event.operator?.open_id ?? "" },
           data: event.action?.value ?? {},
           messageId,
+          "va.channel": callbackContext,
         })
         .catch(() => {});
     }
