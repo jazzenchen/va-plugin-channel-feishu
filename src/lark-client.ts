@@ -189,6 +189,10 @@ export class FeishuClient {
     }
   }
 
+  isWSConnected(): boolean {
+    return this.wsClient?.getConnectionStatus().state === "connected";
+  }
+
   // ---- Send text (as interactive card with lark_md) ------------------------
 
   async sendText(
