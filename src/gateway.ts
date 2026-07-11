@@ -8,7 +8,7 @@
 
 import path from "node:path";
 
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
+import { extractErrorMessage, sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
 import type { Agent, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
 import type { FeishuClient } from "./lark-client.js";
 import type { AgentStreamHandler } from "./agent-stream.js";
@@ -29,14 +29,24 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
   readonly client: FeishuClient;
   private agent: Agent;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
   private dedup = new MessageDedup();
   private abortController = new AbortController();
 
-  constructor(client: FeishuClient, agent: Agent, cacheDir: string) {
+  constructor(
+    client: FeishuClient,
+    agent: Agent,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.client = client;
     this.agent = agent;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
   }
 
   setStreamHandler(handler: AgentStreamHandler): void {
@@ -179,10 +189,20 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     this.streamHandler?.onPromptSent(chatId);
 
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context: {
+          channelInstanceId: this.channelInstanceId,
+          actorId: this.actorId,
+          chatId,
+          topicId: msg.thread_id ?? msg.root_id,
+          senderId: senderOpenId,
+          platformMessageId: messageId,
+          scope: msg.chat_type === "p2p" ? "dm" : "group",
+          addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
+        },
         prompt: contentBlocks,
       });
+      if (!response) return;
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
@@ -262,10 +282,19 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       const contentBlocks: ContentBlock[] = [{ type: "text", text: command }];
       await this.streamHandler?.onPromptSent(chatId);
       try {
-        const response = await this.agent.prompt({
-          sessionId: chatId,
+        const response = await sendChannelPrompt(this.agent, {
+          context: {
+            channelInstanceId: this.channelInstanceId,
+            actorId: this.actorId,
+            chatId,
+            senderId: event.operator?.open_id,
+            platformMessageId: messageId || undefined,
+            scope: "group",
+            addressedBy: "callback",
+          },
           prompt: contentBlocks,
         });
+        if (!response) return {};
         this.log("info", `card command done chat=${chatId} cmd=${command} stopReason=${response.stopReason}`);
         this.streamHandler?.onTurnEnd(chatId);
       } catch (error: unknown) {

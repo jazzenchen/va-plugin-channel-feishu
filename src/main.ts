@@ -24,11 +24,11 @@ runChannelPlugin({
   name: "vibearound-feishu",
   version: "0.1.0",
   requiredConfig: ["app_id", "app_secret"],
-  createBot: ({ config, agent, log, cacheDir }) => {
+  createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) => {
     const feishuConfig = config as unknown as FeishuConfig;
     log("info", `appId=${feishuConfig.app_id}`);
     const client = new FeishuClient(feishuConfig);
-    return new FeishuGateway(client, agent, cacheDir);
+    return new FeishuGateway(client, agent, cacheDir, channelInstanceId, actorId);
   },
   afterCreate: async (gateway) => {
     // probe() calls GET /open-apis/bot/v3/info to get botOpenId + botName.
