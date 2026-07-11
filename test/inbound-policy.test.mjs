@@ -20,3 +20,14 @@ test("ordinary group messages require a bot mention", () => {
     true,
   );
 });
+
+test("group commands follow the same bot mention rule", () => {
+  assert.equal(
+    shouldHandleInboundMessage({ chatType: "group", mentionedBot: false }),
+    false,
+  );
+  assert.equal(
+    shouldHandleInboundMessage({ chatType: "group", mentionedBot: true }),
+    true,
+  );
+});

@@ -10,6 +10,7 @@ import path from "node:path";
 
 import {
   cancelChannelPrompt,
+  channelTargetFromInboundContext,
   extractErrorMessage,
   isChannelStopCommand,
   sendChannelPrompt,
@@ -196,6 +197,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       scope: msg.chat_type === "p2p" ? "dm" : "group",
       addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
     } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
 
     if (firstText && isChannelStopCommand(firstText)) {
       await cancelChannelPrompt(this.agent, { context: inboundContext });
@@ -204,26 +206,29 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
 
     // If a permission prompt is awaiting a reply, consume this message instead
     // of forwarding it to the agent.
-    if (firstText && this.streamHandler?.consumePendingText(chatId, firstText)) {
+    if (firstText && this.streamHandler?.consumePendingText(target, firstText)) {
       this.log("info", `consumed text as permission reply chat=${chatId}`);
       return;
     }
 
     this.log("info", `prompt: chat=${chatId} blocks=${contentBlocks.length} text=${firstText.slice(0, 60)}`);
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     try {
       const response = await sendChannelPrompt(this.agent, {
         context: inboundContext,
         prompt: contentBlocks,
       });
-      if (!response) return;
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     }
   }
 
@@ -306,28 +311,36 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
         channelInstanceId: this.channelInstanceId,
         actorId: this.actorId,
         chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
         senderId: event.operator?.open_id,
         platformMessageId: messageId || undefined,
-        scope: "group",
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
         addressedBy: "callback",
       } satisfies ChannelInboundContext;
+      const target = channelTargetFromInboundContext(inboundContext);
       if (isChannelStopCommand(command)) {
         await cancelChannelPrompt(this.agent, { context: inboundContext });
         return {};
       }
-      await this.streamHandler?.onPromptSent(chatId);
+      this.streamHandler?.onPromptSent(target);
       try {
         const response = await sendChannelPrompt(this.agent, {
           context: inboundContext,
           prompt: contentBlocks,
         });
-        if (!response) return {};
+        if (!response) {
+          await this.streamHandler?.onTurnEnd(target);
+          return {};
+        }
         this.log("info", `card command done chat=${chatId} cmd=${command} stopReason=${response.stopReason}`);
-        this.streamHandler?.onTurnEnd(chatId);
+        await this.streamHandler?.onTurnEnd(target);
       } catch (error: unknown) {
         const msg = extractErrorMessage(error);
         this.log("error", `card command failed chat=${chatId}: ${msg}`);
-        this.streamHandler?.onTurnError(chatId, msg);
+        await this.streamHandler?.onTurnError(target, msg);
       }
     } else {
       // Generic callback (non-command button)
