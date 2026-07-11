@@ -8,8 +8,13 @@
 
 import path from "node:path";
 
-import { extractErrorMessage, sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
-import type { Agent, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
+import type { Agent, ChannelInboundContext, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
 import type { FeishuClient } from "./lark-client.js";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import type { FeishuMessageEvent, FeishuReactionCreatedEvent, MentionInfo } from "./messaging/types.js";
@@ -177,6 +182,21 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     if (contentBlocks.length === 0) return;
 
     const firstText = contentBlocks[0]?.type === "text" ? contentBlocks[0].text : "";
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.thread_id ?? msg.root_id,
+      senderId: senderOpenId,
+      platformMessageId: messageId,
+      scope: msg.chat_type === "p2p" ? "dm" : "group",
+      addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+
+    if (firstText && isChannelStopCommand(firstText)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // If a permission prompt is awaiting a reply, consume this message instead
     // of forwarding it to the agent.
@@ -190,16 +210,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
 
     try {
       const response = await sendChannelPrompt(this.agent, {
-        context: {
-          channelInstanceId: this.channelInstanceId,
-          actorId: this.actorId,
-          chatId,
-          topicId: msg.thread_id ?? msg.root_id,
-          senderId: senderOpenId,
-          platformMessageId: messageId,
-          scope: msg.chat_type === "p2p" ? "dm" : "group",
-          addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
-        },
+        context: inboundContext,
         prompt: contentBlocks,
       });
       if (!response) return;
@@ -280,18 +291,23 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     if (command && chatId) {
       // Command button clicked — send as a prompt so the host can parse the slash command
       const contentBlocks: ContentBlock[] = [{ type: "text", text: command }];
+      const inboundContext = {
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId || undefined,
+        scope: "group",
+        addressedBy: "callback",
+      } satisfies ChannelInboundContext;
+      if (isChannelStopCommand(command)) {
+        await cancelChannelPrompt(this.agent, { context: inboundContext });
+        return {};
+      }
       await this.streamHandler?.onPromptSent(chatId);
       try {
         const response = await sendChannelPrompt(this.agent, {
-          context: {
-            channelInstanceId: this.channelInstanceId,
-            actorId: this.actorId,
-            chatId,
-            senderId: event.operator?.open_id,
-            platformMessageId: messageId || undefined,
-            scope: "group",
-            addressedBy: "callback",
-          },
+          context: inboundContext,
           prompt: contentBlocks,
         });
         if (!response) return {};
