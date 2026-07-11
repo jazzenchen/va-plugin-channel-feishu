@@ -50,7 +50,6 @@ test("Feishu renderer preserves reply and thread semantics", async () => {
     assert.equal(call[4], true);
   }
 });
-
 test("Feishu client sets reply_in_thread on reply API requests", async () => {
   const requests = [];
   const client = Object.create(FeishuClient.prototype);
@@ -81,4 +80,3 @@ test("Feishu client sets reply_in_thread on reply API requests", async () => {
     },
   });
 });
-
