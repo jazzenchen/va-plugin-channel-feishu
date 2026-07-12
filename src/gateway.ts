@@ -8,16 +8,27 @@
 
 import path from "node:path";
 
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
-import type { Agent, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  channelTargetFromInboundContext,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
+import type { Agent, ChannelInboundContext, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
 import type { FeishuClient } from "./lark-client.js";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import type { FeishuMessageEvent, FeishuReactionCreatedEvent, MentionInfo } from "./messaging/types.js";
 import type { ConvertContext } from "./messaging/converters/types.js";
 import { convertMessageContent } from "./messaging/converters/content-converter.js";
 import { MessageDedup } from "./messaging/inbound/dedup.js";
+import { shouldHandleInboundMessage } from "./messaging/inbound/policy.js";
 import { downloadMessageResource } from "./messaging/media-download.js";
 import type { DownloadedResource } from "./messaging/media-download.js";
+import {
+  createFeishuCallbackContext,
+  serializeFeishuCallbackData,
+} from "./route-context.js";
 
 // ---------------------------------------------------------------------------
 // Gateway
@@ -28,14 +39,24 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
   readonly client: FeishuClient;
   private agent: Agent;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
   private dedup = new MessageDedup();
   private abortController = new AbortController();
 
-  constructor(client: FeishuClient, agent: Agent, cacheDir: string) {
+  constructor(
+    client: FeishuClient,
+    agent: Agent,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.client = client;
     this.agent = agent;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
   }
 
   setStreamHandler(handler: AgentStreamHandler): void {
@@ -122,6 +143,15 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     // Convert message content using the full converter system
     const result = await convertMessageContent(msg.message_type, msg.content, ctx);
 
+    const mentionedBot = [...mentionsMap.values()].some((mention) => mention.isBot);
+    if (!shouldHandleInboundMessage({
+      chatType: msg.chat_type,
+      mentionedBot,
+    })) {
+      this.log("debug", `group message ignored without bot mention chat=${chatId}`);
+      return;
+    }
+
     // Download media resources (images, files, etc.)
     const downloaded: DownloadedResource[] = [];
     for (const resource of result.resources) {
@@ -157,28 +187,48 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     if (contentBlocks.length === 0) return;
 
     const firstText = contentBlocks[0]?.type === "text" ? contentBlocks[0].text : "";
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.thread_id ?? msg.root_id,
+      senderId: senderOpenId,
+      platformMessageId: messageId,
+      scope: msg.chat_type === "p2p" ? "dm" : "group",
+      addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
+
+    if (firstText && isChannelStopCommand(firstText)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // If a permission prompt is awaiting a reply, consume this message instead
     // of forwarding it to the agent.
-    if (firstText && this.streamHandler?.consumePendingText(chatId, firstText)) {
+    if (firstText && this.streamHandler?.consumePendingText(target, firstText)) {
       this.log("info", `consumed text as permission reply chat=${chatId}`);
       return;
     }
 
     this.log("info", `prompt: chat=${chatId} blocks=${contentBlocks.length} text=${firstText.slice(0, 60)}`);
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context: inboundContext,
         prompt: contentBlocks,
       });
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     }
   }
 
@@ -200,9 +250,16 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       action?: { value?: Record<string, unknown>; tag?: string };
       operator?: { open_id?: string };
       // V2 puts chat/message IDs in context, V1 had them at top level
-      context?: { open_chat_id?: string; open_message_id?: string };
+      context?: {
+        open_chat_id?: string;
+        open_message_id?: string;
+        open_thread_id?: string;
+        chat_type?: "p2p" | "group";
+      };
       open_chat_id?: string;
       open_message_id?: string;
+      open_thread_id?: string;
+      chat_type?: "p2p" | "group";
     };
 
     const chatId = event.context?.open_chat_id ?? event.open_chat_id ?? "";
@@ -250,28 +307,63 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     if (command && chatId) {
       // Command button clicked — send as a prompt so the host can parse the slash command
       const contentBlocks: ContentBlock[] = [{ type: "text", text: command }];
-      await this.streamHandler?.onPromptSent(chatId);
+      const inboundContext = {
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId || undefined,
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
+        addressedBy: "callback",
+      } satisfies ChannelInboundContext;
+      const target = channelTargetFromInboundContext(inboundContext);
+      if (isChannelStopCommand(command)) {
+        await cancelChannelPrompt(this.agent, { context: inboundContext });
+        return {};
+      }
+      this.streamHandler?.onPromptSent(target);
       try {
-        const response = await this.agent.prompt({
-          sessionId: chatId,
+        const response = await sendChannelPrompt(this.agent, {
+          context: inboundContext,
           prompt: contentBlocks,
         });
+        if (!response) {
+          await this.streamHandler?.onTurnEnd(target);
+          return {};
+        }
         this.log("info", `card command done chat=${chatId} cmd=${command} stopReason=${response.stopReason}`);
-        this.streamHandler?.onTurnEnd(chatId);
+        await this.streamHandler?.onTurnEnd(target);
       } catch (error: unknown) {
         const msg = extractErrorMessage(error);
         this.log("error", `card command failed chat=${chatId}: ${msg}`);
-        this.streamHandler?.onTurnError(chatId, msg);
+        await this.streamHandler?.onTurnError(target, msg);
       }
     } else {
       // Generic callback (non-command button)
+      const callbackContext = createFeishuCallbackContext({
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId,
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
+      });
       this.agent
         .extNotification?.("_va/callback", {
           chatId,
           callbackId: `card_${Date.now()}`,
           sender: { id: event.operator?.open_id ?? "" },
-          data: event.action?.value ?? {},
+          data: serializeFeishuCallbackData(event.action?.value),
           messageId,
+          "va.channel": callbackContext,
         })
         .catch(() => {});
     }
