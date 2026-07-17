@@ -16,7 +16,6 @@ src/tools/docs/
 /doc/
 /docs/
 
-/**/package-lock.json
 /**/.DS_Store
 
 .env
