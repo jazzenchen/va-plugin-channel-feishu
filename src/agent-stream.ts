@@ -8,14 +8,15 @@
  *   - onCommandMenu — V2 card for command listing
  *   - onRequestPermission — V2 card with interactive permission buttons
  *
- * Everything else (block accumulation, debouncing, notification routing,
- * toolCallId caching, text-permission fallback, lastActiveChatId tracking)
- * is handled by BlockRenderer in the SDK.
+ * Everything else (block accumulation, debouncing, target-scoped notification
+ * routing, toolCallId caching, and text-permission fallback) is handled by
+ * BlockRenderer in the SDK.
  */
 
 import {
   BlockRenderer,
   type BlockKind,
+  type ChannelTarget,
   type CommandEntry,
   type RequestPermissionRequest,
   type VerboseConfig,
@@ -51,15 +52,25 @@ export class AgentStreamHandler extends BlockRenderer<string> {
   // ---- Required by BlockRenderer ----
 
   /** Send plain text message (for system text, agent ready, errors). */
-  protected async sendText(chatId: string, text: string): Promise<void> {
-    await this.feishuClient.sendText(chatId, text);
+  protected async sendText(target: ChannelTarget, text: string): Promise<void> {
+    await this.feishuClient.sendText(
+      target.chatId,
+      text,
+      target.replyTo,
+      target.topicId != null,
+    );
   }
 
   /** Send new streaming block as an interactive card. */
-  protected async sendBlock(chatId: string, kind: BlockKind, content: string): Promise<string | null> {
+  protected async sendBlock(target: ChannelTarget, kind: BlockKind, content: string): Promise<string | null> {
     try {
       const card = buildStreamingCard(content);
-      const messageId = await this.feishuClient.sendInteractive(chatId, card);
+      const messageId = await this.feishuClient.sendInteractive(
+        target.chatId,
+        card,
+        target.replyTo,
+        target.topicId != null,
+      );
       this.log("debug", `sendBlock kind=${kind} messageId=${messageId}`);
       return messageId ?? null;
     } catch (e) {
@@ -70,7 +81,7 @@ export class AgentStreamHandler extends BlockRenderer<string> {
 
   /** Edit existing block — streaming card while live, markdown card when sealed. */
   protected async editBlock(
-    _chatId: string,
+    _target: ChannelTarget,
     ref: string,
     _kind: BlockKind,
     content: string,
@@ -96,9 +107,14 @@ export class AgentStreamHandler extends BlockRenderer<string> {
   // ---- Error rendering ----
 
   /** Send error card on turn error. */
-  protected async onAfterTurnError(chatId: string, error: string): Promise<void> {
+  protected async onAfterTurnError(target: ChannelTarget, error: string): Promise<void> {
     const card = buildMarkdownCard(`❌ **Error**\n\n${error}`);
-    this.feishuClient.sendInteractive(chatId, card).catch(() => {});
+    await this.feishuClient.sendInteractive(
+      target.chatId,
+      card,
+      target.replyTo,
+      target.topicId != null,
+    ).catch(() => {});
   }
 
   // ---- Permission UI (Tier 1: interactive card buttons) ----
@@ -110,11 +126,11 @@ export class AgentStreamHandler extends BlockRenderer<string> {
    * card action handler can route the click back to `resolvePermission` and
    * update the card into a resolved state.
    *
-   * We capture the sent messageId in `permissionCardMessages` keyed by
-   * callbackId so the gateway can edit the card after the first click.
+   * The gateway returns a replacement card after the first click, which
+   * atomically removes the buttons.
    */
   protected async onRequestPermission(
-    chatId: string,
+    target: ChannelTarget,
     request: RequestPermissionRequest,
     callbackId: string,
   ): Promise<void> {
@@ -169,7 +185,12 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     };
 
     try {
-      await this.feishuClient.sendInteractive(chatId, card);
+      await this.feishuClient.sendInteractive(
+        target.chatId,
+        card,
+        target.replyTo,
+        target.topicId != null,
+      );
     } catch (e) {
       this.log("error", `onRequestPermission send failed: ${e}`);
       throw e;
@@ -202,7 +223,7 @@ export class AgentStreamHandler extends BlockRenderer<string> {
 
   /** Render command menu as a Feishu V2 card. */
   onCommandMenu(
-    chatId: string,
+    target: ChannelTarget,
     systemCommands: CommandEntry[],
     agentCommands: CommandEntry[],
   ): void {
@@ -259,7 +280,12 @@ export class AgentStreamHandler extends BlockRenderer<string> {
       body: { elements },
     };
 
-    this.feishuClient.sendInteractive(chatId, card).catch((e) => {
+    this.feishuClient.sendInteractive(
+      target.chatId,
+      card,
+      target.replyTo,
+      target.topicId != null,
+    ).catch((e) => {
       this.log("error", `sendCommandMenu failed: ${e}`);
     });
   }

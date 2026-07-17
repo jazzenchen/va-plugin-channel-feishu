@@ -189,18 +189,24 @@ export class FeishuClient {
     }
   }
 
+  isWSConnected(): boolean {
+    return this.wsClient?.getConnectionStatus().state === "connected";
+  }
+
   // ---- Send text (as interactive card with lark_md) ------------------------
 
-  async sendText(chatId: string, text: string): Promise<string | undefined> {
-    const res = await this.sdk.im.message.create({
-      params: { receive_id_type: "chat_id" },
-      data: {
-        receive_id: chatId,
-        msg_type: "interactive",
-        content: JSON.stringify(buildMarkdownCard(text)),
-      },
-    });
-    return res.data?.message_id;
+  async sendText(
+    chatId: string,
+    text: string,
+    replyTo?: string,
+    replyInThread = false,
+  ): Promise<string | undefined> {
+    return this.sendInteractive(
+      chatId,
+      buildMarkdownCard(text),
+      replyTo,
+      replyInThread,
+    );
   }
 
   // ---- Reply (plain text, to a specific message) ---------------------------
@@ -229,13 +235,19 @@ export class FeishuClient {
 
   // ---- Interactive card (buttons) ------------------------------------------
 
-  async sendInteractive(chatId: string, card: object, replyTo?: string): Promise<string | undefined> {
+  async sendInteractive(
+    chatId: string,
+    card: object,
+    replyTo?: string,
+    replyInThread = false,
+  ): Promise<string | undefined> {
     if (replyTo) {
       const res = await this.sdk.im.message.reply({
         path: { message_id: replyTo },
         data: {
           msg_type: "interactive",
           content: JSON.stringify(card),
+          reply_in_thread: replyInThread,
         },
       });
       return res.data?.message_id;
