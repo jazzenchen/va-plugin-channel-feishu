@@ -22,7 +22,7 @@ import type { FeishuConfig } from "./protocol.js";
 
 runChannelPlugin({
   name: "vibearound-feishu",
-  version: "0.1.0",
+  version: "0.6.3",
   requiredConfig: ["app_id", "app_secret"],
   createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) => {
     const feishuConfig = config as unknown as FeishuConfig;
