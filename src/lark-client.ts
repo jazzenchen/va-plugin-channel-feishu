@@ -24,11 +24,19 @@ function plugLog(level: string, message: string): void {
 // errors can retain outbound message bodies in config.data.
 // ---------------------------------------------------------------------------
 
-function serializeArgs(...args: unknown[]): string {
+function serializeArgs(...loggerArgs: unknown[]): string {
+  // LoggerProxy forwards the original arguments as one array argument.
+  const args = loggerArgs.length === 1 && Array.isArray(loggerArgs[0])
+    ? loggerArgs[0]
+    : loggerArgs;
+
   return args.map((v) => {
     if (typeof v === "string") return v;
     if (v && typeof v === "object" && "isAxiosError" in v) {
-      const err = v as any;
+      const err = v as {
+        code?: unknown;
+        response?: { status?: unknown };
+      };
       const parts = ["AxiosError"];
       if (err.code) parts.push(`code=${String(err.code)}`);
       if (err.response?.status) parts.push(`status=${String(err.response.status)}`);
@@ -41,11 +49,11 @@ function serializeArgs(...args: unknown[]): string {
 }
 
 const sdkLogger = {
-  error: (...msg: any[]) => plugLog("error", `[lark-sdk] ${serializeArgs(...msg)}`),
-  warn: (...msg: any[]) => plugLog("warn", `[lark-sdk] ${serializeArgs(...msg)}`),
-  info: (...msg: any[]) => plugLog("info", `[lark-sdk] ${serializeArgs(...msg)}`),
-  debug: (...msg: any[]) => plugLog("debug", `[lark-sdk] ${serializeArgs(...msg)}`),
-  trace: (...msg: any[]) => { /* suppress trace-level noise */ },
+  error: (...msg: unknown[]) => plugLog("error", `[lark-sdk] ${serializeArgs(...msg)}`),
+  warn: (...msg: unknown[]) => plugLog("warn", `[lark-sdk] ${serializeArgs(...msg)}`),
+  info: (...msg: unknown[]) => plugLog("info", `[lark-sdk] ${serializeArgs(...msg)}`),
+  debug: (...msg: unknown[]) => plugLog("debug", `[lark-sdk] ${serializeArgs(...msg)}`),
+  trace: (..._msg: unknown[]) => { /* suppress trace-level noise */ },
 };
 
 // ---------------------------------------------------------------------------
