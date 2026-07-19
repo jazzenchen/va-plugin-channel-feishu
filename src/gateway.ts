@@ -7,6 +7,7 @@
  */
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   cancelChannelPrompt,
@@ -178,7 +179,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
     for (const media of downloaded) {
       contentBlocks.push({
         type: "resource_link",
-        uri: `file://${media.path}`,
+        uri: pathToFileURL(media.path).href,
         name: media.fileName ?? path.basename(media.path),
         mimeType: media.mimeType,
       });
