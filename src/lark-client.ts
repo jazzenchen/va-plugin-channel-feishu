@@ -69,6 +69,17 @@ function resolveDomain(brand?: string): Lark.Domain {
   return BRAND_DOMAIN[brand ?? "feishu"] ?? Lark.Domain.Feishu;
 }
 
+function assertApiSuccess(
+  response: { code?: number; msg?: string },
+  operation: string,
+): void {
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(
+      `Feishu ${operation} failed: ${response.msg || `code ${response.code}`}`,
+    );
+  }
+}
+
 import { buildMarkdownCard } from "./card/builder.js";
 
 // ---------------------------------------------------------------------------
@@ -250,6 +261,7 @@ export class FeishuClient {
           reply_in_thread: replyInThread,
         },
       });
+      assertApiSuccess(res, "interactive reply");
       return res.data?.message_id;
     }
     const res = await this.sdk.im.message.create({
@@ -260,16 +272,18 @@ export class FeishuClient {
         content: JSON.stringify(card),
       },
     });
+    assertApiSuccess(res, "interactive send");
     return res.data?.message_id;
   }
 
   async updateInteractive(messageId: string, card: object): Promise<void> {
-    await this.sdk.im.message.patch({
+    const res = await this.sdk.im.message.patch({
       path: { message_id: messageId },
       data: {
         content: JSON.stringify(card),
       },
     });
+    assertApiSuccess(res, "interactive update");
   }
 
   // ---- Download message resource (image/file) ------------------------------
