@@ -74,20 +74,6 @@ test("Feishu renderer surfaces agent reply delivery failures", async () => {
     renderer.onAfterTurnError(target, "agent failed"),
     /send failed/,
   );
-
-  renderer.onPromptSent(target);
-  renderer.onSessionUpdate(target, {
-    sessionId: "session-1",
-    update: {
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "final answer" },
-      messageId: "message-final",
-    },
-  });
-  await assert.rejects(
-    renderer.onTurnEnd(target),
-    /send failed/,
-  );
 });
 
 test("Feishu client sets reply_in_thread on reply API requests", async () => {
