@@ -73,11 +73,11 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
         "im.message.receive_v1": (data) => this.handleMessage(data),
         "im.message.message_read_v1": async () => {},
         "im.message.reaction.created_v1": (data) => this.handleReaction(data),
-        "im.chat.member.bot.added_v1": async (data) => {
-          this.log("info", `bot added to chat: ${JSON.stringify(data)}`);
+        "im.chat.member.bot.added_v1": async () => {
+          this.log("info", "bot added to chat");
         },
-        "im.chat.member.bot.deleted_v1": async (data) => {
-          this.log("info", `bot removed from chat: ${JSON.stringify(data)}`);
+        "im.chat.member.bot.deleted_v1": async () => {
+          this.log("info", "bot removed from chat");
         },
         "card.action.trigger": (data) => this.handleCardAction(data),
       },
@@ -211,7 +211,7 @@ export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
       return;
     }
 
-    this.log("info", `prompt: chat=${chatId} blocks=${contentBlocks.length} text=${firstText.slice(0, 60)}`);
+    this.log("info", `prompt: chat=${chatId} blocks=${contentBlocks.length}`);
     this.streamHandler?.onPromptSent(target);
 
     try {

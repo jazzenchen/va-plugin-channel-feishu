@@ -12,7 +12,6 @@
  */
 
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { inspect } from "node:util";
 import type { FeishuConfig } from "./protocol.js";
 function plugLog(level: string, message: string): void {
   process.stderr.write(`[feishu-lark][${level}] ${message}\n`);
@@ -21,7 +20,8 @@ function plugLog(level: string, message: string): void {
 // Note: console.* are redirected to stderr in main.ts.
 
 // ---------------------------------------------------------------------------
-// Custom logger for Lark SDK — serializes objects properly
+// Custom logger for Lark SDK. Never serialize request/response objects: Axios
+// errors can retain outbound message bodies in config.data.
 // ---------------------------------------------------------------------------
 
 function serializeArgs(...args: unknown[]): string {
@@ -29,22 +29,14 @@ function serializeArgs(...args: unknown[]): string {
     if (typeof v === "string") return v;
     if (v && typeof v === "object" && "isAxiosError" in v) {
       const err = v as any;
-      const parts = [`AxiosError: ${err.message ?? "unknown"}`];
-      if (err.response) {
-        parts.push(`status=${err.response.status}`);
-        const data = err.response.data;
-        if (data) {
-          try {
-            parts.push(`body=${typeof data === "string" ? data : JSON.stringify(data)}`);
-          } catch {
-            parts.push(`body=${inspect(data, { depth: 2, colors: false })}`);
-          }
-        }
-      }
-      if (err.config?.url) parts.push(`url=${err.config.url}`);
+      const parts = ["AxiosError"];
+      if (err.code) parts.push(`code=${String(err.code)}`);
+      if (err.response?.status) parts.push(`status=${String(err.response.status)}`);
       return parts.join(" | ");
     }
-    try { return JSON.stringify(v); } catch { return inspect(v, { depth: 3, colors: false }); }
+    if (v instanceof Error) return v.name;
+    if (v == null || typeof v === "number" || typeof v === "boolean") return String(v);
+    return "[object omitted]";
   }).join(" ");
 }
 
