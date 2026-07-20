@@ -12,7 +12,6 @@
  */
 
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { inspect } from "node:util";
 import type { FeishuConfig } from "./protocol.js";
 function plugLog(level: string, message: string): void {
   process.stderr.write(`[feishu-lark][${level}] ${message}\n`);
@@ -21,39 +20,40 @@ function plugLog(level: string, message: string): void {
 // Note: console.* are redirected to stderr in main.ts.
 
 // ---------------------------------------------------------------------------
-// Custom logger for Lark SDK — serializes objects properly
+// Custom logger for Lark SDK. Never serialize request/response objects: Axios
+// errors can retain outbound message bodies in config.data.
 // ---------------------------------------------------------------------------
 
-function serializeArgs(...args: unknown[]): string {
+function serializeArgs(...loggerArgs: unknown[]): string {
+  // LoggerProxy forwards the original arguments as one array argument.
+  const args = loggerArgs.length === 1 && Array.isArray(loggerArgs[0])
+    ? loggerArgs[0]
+    : loggerArgs;
+
   return args.map((v) => {
     if (typeof v === "string") return v;
     if (v && typeof v === "object" && "isAxiosError" in v) {
-      const err = v as any;
-      const parts = [`AxiosError: ${err.message ?? "unknown"}`];
-      if (err.response) {
-        parts.push(`status=${err.response.status}`);
-        const data = err.response.data;
-        if (data) {
-          try {
-            parts.push(`body=${typeof data === "string" ? data : JSON.stringify(data)}`);
-          } catch {
-            parts.push(`body=${inspect(data, { depth: 2, colors: false })}`);
-          }
-        }
-      }
-      if (err.config?.url) parts.push(`url=${err.config.url}`);
+      const err = v as {
+        code?: unknown;
+        response?: { status?: unknown };
+      };
+      const parts = ["AxiosError"];
+      if (err.code) parts.push(`code=${String(err.code)}`);
+      if (err.response?.status) parts.push(`status=${String(err.response.status)}`);
       return parts.join(" | ");
     }
-    try { return JSON.stringify(v); } catch { return inspect(v, { depth: 3, colors: false }); }
+    if (v instanceof Error) return v.name;
+    if (v == null || typeof v === "number" || typeof v === "boolean") return String(v);
+    return "[object omitted]";
   }).join(" ");
 }
 
 const sdkLogger = {
-  error: (...msg: any[]) => plugLog("error", `[lark-sdk] ${serializeArgs(...msg)}`),
-  warn: (...msg: any[]) => plugLog("warn", `[lark-sdk] ${serializeArgs(...msg)}`),
-  info: (...msg: any[]) => plugLog("info", `[lark-sdk] ${serializeArgs(...msg)}`),
-  debug: (...msg: any[]) => plugLog("debug", `[lark-sdk] ${serializeArgs(...msg)}`),
-  trace: (...msg: any[]) => { /* suppress trace-level noise */ },
+  error: (...msg: unknown[]) => plugLog("error", `[lark-sdk] ${serializeArgs(...msg)}`),
+  warn: (...msg: unknown[]) => plugLog("warn", `[lark-sdk] ${serializeArgs(...msg)}`),
+  info: (...msg: unknown[]) => plugLog("info", `[lark-sdk] ${serializeArgs(...msg)}`),
+  debug: (...msg: unknown[]) => plugLog("debug", `[lark-sdk] ${serializeArgs(...msg)}`),
+  trace: (..._msg: unknown[]) => { /* suppress trace-level noise */ },
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +67,17 @@ const BRAND_DOMAIN: Record<string, Lark.Domain> = {
 
 function resolveDomain(brand?: string): Lark.Domain {
   return BRAND_DOMAIN[brand ?? "feishu"] ?? Lark.Domain.Feishu;
+}
+
+function assertApiSuccess(
+  response: { code?: number; msg?: string },
+  operation: string,
+): void {
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(
+      `Feishu ${operation} failed: ${response.msg || `code ${response.code}`}`,
+    );
+  }
 }
 
 import { buildMarkdownCard } from "./card/builder.js";
@@ -250,6 +261,7 @@ export class FeishuClient {
           reply_in_thread: replyInThread,
         },
       });
+      assertApiSuccess(res, "interactive reply");
       return res.data?.message_id;
     }
     const res = await this.sdk.im.message.create({
@@ -260,16 +272,18 @@ export class FeishuClient {
         content: JSON.stringify(card),
       },
     });
+    assertApiSuccess(res, "interactive send");
     return res.data?.message_id;
   }
 
   async updateInteractive(messageId: string, card: object): Promise<void> {
-    await this.sdk.im.message.patch({
+    const res = await this.sdk.im.message.patch({
       path: { message_id: messageId },
       data: {
         content: JSON.stringify(card),
       },
     });
+    assertApiSuccess(res, "interactive update");
   }
 
   // ---- Download message resource (image/file) ------------------------------

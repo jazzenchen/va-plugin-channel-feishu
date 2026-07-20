@@ -63,20 +63,15 @@ export class AgentStreamHandler extends BlockRenderer<string> {
 
   /** Send new streaming block as an interactive card. */
   protected async sendBlock(target: ChannelTarget, kind: BlockKind, content: string): Promise<string | null> {
-    try {
-      const card = buildStreamingCard(content);
-      const messageId = await this.feishuClient.sendInteractive(
-        target.chatId,
-        card,
-        target.replyTo,
-        target.topicId != null,
-      );
-      this.log("debug", `sendBlock kind=${kind} messageId=${messageId}`);
-      return messageId ?? null;
-    } catch (e) {
-      this.log("error", `sendBlock failed: ${e}`);
-      return null;
-    }
+    const card = buildStreamingCard(content);
+    const messageId = await this.feishuClient.sendInteractive(
+      target.chatId,
+      card,
+      target.replyTo,
+      target.topicId != null,
+    );
+    this.log("debug", `sendBlock kind=${kind} messageId=${messageId}`);
+    return messageId ?? null;
   }
 
   /** Edit existing block — streaming card while live, markdown card when sealed. */
@@ -87,12 +82,8 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     content: string,
     sealed: boolean,
   ): Promise<void> {
-    try {
-      const card = sealed ? buildMarkdownCard(content) : buildStreamingCard(content);
-      await this.feishuClient.updateInteractive(ref, card);
-    } catch (e) {
-      this.log("error", `editBlock failed: ${e}`);
-    }
+    const card = sealed ? buildMarkdownCard(content) : buildStreamingCard(content);
+    await this.feishuClient.updateInteractive(ref, card);
   }
 
   /** Feishu markdown formatting. */
@@ -114,7 +105,7 @@ export class AgentStreamHandler extends BlockRenderer<string> {
       card,
       target.replyTo,
       target.topicId != null,
-    ).catch(() => {});
+    );
   }
 
   // ---- Permission UI (Tier 1: interactive card buttons) ----
