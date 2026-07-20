@@ -65,10 +65,10 @@ export async function downloadMessageResource(params: {
   const { client, messageId, resource, cacheDir, chatId } = params;
   const { type, fileKey, fileName } = resource;
 
-  // Determine ext from fileName if available, otherwise use defaults
-  const ext = fileName && fileName.includes(".")
-    ? `.${fileName.split(".").pop()}`
-    : TYPE_TO_EXT[type] ?? ".bin";
+  const fileExt = fileName
+    ? path.extname(path.posix.basename(fileName.replaceAll("\\", "/")))
+    : "";
+  const ext = fileExt || TYPE_TO_EXT[type] || ".bin";
 
   const cachePath = buildCachePath({ cacheDir, chatId, fileKey, ext });
 

@@ -50,6 +50,32 @@ test("Feishu renderer preserves reply and thread semantics", async () => {
     assert.equal(call[4], true);
   }
 });
+
+test("Feishu renderer surfaces agent reply delivery failures", async () => {
+  const client = {
+    async sendInteractive() {
+      throw new Error("send failed");
+    },
+    async updateInteractive() {
+      throw new Error("update failed");
+    },
+  };
+  const renderer = new AgentStreamHandler(client, () => {});
+
+  await assert.rejects(
+    renderer.sendBlock(target, "text", "answer"),
+    /send failed/,
+  );
+  await assert.rejects(
+    renderer.editBlock(target, "om_outbound", "text", "answer", false),
+    /update failed/,
+  );
+  await assert.rejects(
+    renderer.onAfterTurnError(target, "agent failed"),
+    /send failed/,
+  );
+});
+
 test("Feishu client sets reply_in_thread on reply API requests", async () => {
   const requests = [];
   const client = Object.create(FeishuClient.prototype);
@@ -79,4 +105,29 @@ test("Feishu client sets reply_in_thread on reply API requests", async () => {
       reply_in_thread: true,
     },
   });
+});
+
+test("Feishu client rejects API error responses for agent reply delivery", async () => {
+  const client = Object.create(FeishuClient.prototype);
+  client.sdk = {
+    im: {
+      message: {
+        async create() {
+          return { code: 230001, msg: "send denied" };
+        },
+        async patch() {
+          return { code: 230002, msg: "update denied" };
+        },
+      },
+    },
+  };
+
+  await assert.rejects(
+    client.sendInteractive("oc_group", { schema: "2.0" }),
+    /Feishu interactive send failed: send denied/,
+  );
+  await assert.rejects(
+    client.updateInteractive("om_outbound", { schema: "2.0" }),
+    /Feishu interactive update failed: update denied/,
+  );
 });
