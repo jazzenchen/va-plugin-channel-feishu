@@ -13,6 +13,8 @@
 // MUST be first import — intercepts process.stdout.write before Lark SDK loads
 import "./stdout-guard.js";
 
+import { createRequire } from "node:module";
+
 import { runChannelPlugin } from "@vibearound/plugin-channel-sdk";
 
 import { FeishuClient } from "./lark-client.js";
@@ -20,9 +22,13 @@ import { FeishuGateway } from "./gateway.js";
 import { AgentStreamHandler } from "./agent-stream.js";
 import type { FeishuConfig } from "./protocol.js";
 
+const packageVersion = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
+
 runChannelPlugin({
   name: "vibearound-feishu",
-  version: "0.6.6",
+  version: packageVersion,
   requiredConfig: ["app_id", "app_secret"],
   createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) => {
     const feishuConfig = config as unknown as FeishuConfig;
