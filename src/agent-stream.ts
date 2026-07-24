@@ -18,6 +18,7 @@ import {
   type BlockKind,
   type ChannelTarget,
   type CommandEntry,
+  type OutboundFile,
   type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
@@ -56,6 +57,19 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     await this.feishuClient.sendText(
       target.chatId,
       text,
+      target.replyTo,
+      target.topicId != null,
+    );
+  }
+
+  protected async sendFile(
+    target: ChannelTarget,
+    file: OutboundFile,
+  ): Promise<void> {
+    await this.feishuClient.sendFile(
+      target.chatId,
+      file.path,
+      file.name,
       target.replyTo,
       target.topicId != null,
     );

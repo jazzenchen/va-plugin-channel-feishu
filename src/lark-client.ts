@@ -12,6 +12,7 @@
  */
 
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { createReadStream } from "node:fs";
 import type { FeishuConfig } from "./protocol.js";
 function plugLog(level: string, message: string): void {
   process.stderr.write(`[feishu-lark][${level}] ${message}\n`);
@@ -218,6 +219,49 @@ export class FeishuClient {
       replyTo,
       replyInThread,
     );
+  }
+
+  async sendFile(
+    chatId: string,
+    filePath: string,
+    fileName: string,
+    replyTo?: string,
+    replyInThread = false,
+  ): Promise<void> {
+    const upload = await this.sdk.im.file.create({
+      data: {
+        file_type: "stream",
+        file_name: fileName,
+        file: createReadStream(filePath),
+      },
+    });
+    if (!upload?.file_key) {
+      throw new Error("Feishu file upload returned no file key");
+    }
+
+    const content = JSON.stringify({ file_key: upload.file_key });
+    if (replyTo) {
+      const response = await this.sdk.im.message.reply({
+        path: { message_id: replyTo },
+        data: {
+          msg_type: "file",
+          content,
+          reply_in_thread: replyInThread,
+        },
+      });
+      assertApiSuccess(response, "file reply");
+      return;
+    }
+
+    const response = await this.sdk.im.message.create({
+      params: { receive_id_type: "chat_id" },
+      data: {
+        receive_id: chatId,
+        msg_type: "file",
+        content,
+      },
+    });
+    assertApiSuccess(response, "file send");
   }
 
   // ---- Reply (plain text, to a specific message) ---------------------------

@@ -23,6 +23,9 @@ test("Feishu renderer preserves reply and thread semantics", async () => {
       return "om_outbound";
     },
     async updateInteractive() {},
+    async sendFile(...args) {
+      calls.push(["file", ...args]);
+    },
   };
   const renderer = new AgentStreamHandler(client, () => {});
 
@@ -36,6 +39,10 @@ test("Feishu renderer preserves reply and thread semantics", async () => {
     },
     "callback-1",
   );
+  await renderer.sendFile(target, {
+    path: "/workspace/report.pdf",
+    name: "report.pdf",
+  });
 
   assert.deepEqual(calls[0], [
     "text",
@@ -44,11 +51,19 @@ test("Feishu renderer preserves reply and thread semantics", async () => {
     "om_inbound",
     true,
   ]);
-  for (const call of calls.slice(1)) {
+  for (const call of calls.slice(1, -1)) {
     assert.equal(call[1], "oc_group");
     assert.equal(call[3], "om_inbound");
     assert.equal(call[4], true);
   }
+  assert.deepEqual(calls.at(-1), [
+    "file",
+    "oc_group",
+    "/workspace/report.pdf",
+    "report.pdf",
+    "om_inbound",
+    true,
+  ]);
 });
 
 test("Feishu renderer surfaces agent reply delivery failures", async () => {
