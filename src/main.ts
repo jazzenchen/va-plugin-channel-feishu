@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+/**
+ * VibeAround Feishu Plugin — ACP Client
+ *
+ * Spawned by the Rust host as a child process.
+ * Communicates via ACP protocol (JSON-RPC 2.0 over stdio).
+ *
+ * Plugin = ACP Client, Host = ACP Agent.
+ * Plugin sends prompt() with chatId as sessionId.
+ * Host streams back via sessionUpdate notifications.
+ */
+
+// MUST be first import — intercepts process.stdout.write before Lark SDK loads
+import "./stdout-guard.js";
+
+import { createRequire } from "node:module";
+
+import { runChannelPlugin } from "@vibearound/plugin-channel-sdk";
+
+import { FeishuClient } from "./lark-client.js";
+import { FeishuGateway } from "./gateway.js";
+import { AgentStreamHandler } from "./agent-stream.js";
+import type { FeishuConfig } from "./protocol.js";
+
+const packageVersion = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
+
+runChannelPlugin({
+  name: "vibearound-feishu",
+  version: packageVersion,
+  requiredConfig: ["app_id", "app_secret"],
+  createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) => {
+    const feishuConfig = config as unknown as FeishuConfig;
+    log("info", `appId=${feishuConfig.app_id}`);
+    const client = new FeishuClient(feishuConfig);
+    return new FeishuGateway(client, agent, cacheDir, channelInstanceId, actorId);
+  },
+  afterCreate: async (gateway) => {
+    // probe() calls GET /open-apis/bot/v3/info to get botOpenId + botName.
+    // Must run before start() — start() blocks on WebSocket listen.
+    const result = await gateway.client.probe();
+    if (!result.ok) throw new Error(`Bot probe failed: ${result.error}`);
+  },
+  createRenderer: (gateway, log, verbose) =>
+    new AgentStreamHandler(gateway.client, log, verbose),
+  // REST credentials can remain valid while the inbound WebSocket is dead.
+  // Gate heartbeats on the SDK's actual persistent-connection state.
+  healthCheck: async (gateway) => gateway.client.isWSConnected(),
+});

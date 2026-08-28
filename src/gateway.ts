@@ -1,0 +1,373 @@
+/**
+ * Feishu WebSocket gateway.
+ *
+ * Connects to Lark via WebSocket, listens for inbound events,
+ * parses messages using the full converter system, and forwards
+ * them to the Host as JSON-RPC notifications.
+ */
+
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import {
+  cancelChannelPrompt,
+  channelTargetFromInboundContext,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
+import type { Agent, ChannelInboundContext, ContentBlock, ChannelBot } from "@vibearound/plugin-channel-sdk";
+import type { FeishuClient } from "./lark-client.js";
+import type { AgentStreamHandler } from "./agent-stream.js";
+import type { FeishuMessageEvent, FeishuReactionCreatedEvent, MentionInfo } from "./messaging/types.js";
+import type { ConvertContext } from "./messaging/converters/types.js";
+import { convertMessageContent } from "./messaging/converters/content-converter.js";
+import { MessageDedup } from "./messaging/inbound/dedup.js";
+import { shouldHandleInboundMessage } from "./messaging/inbound/policy.js";
+import { downloadMessageResource } from "./messaging/media-download.js";
+import type { DownloadedResource } from "./messaging/media-download.js";
+import {
+  createFeishuCallbackContext,
+  serializeFeishuCallbackData,
+} from "./route-context.js";
+
+// ---------------------------------------------------------------------------
+// Gateway
+// ---------------------------------------------------------------------------
+
+export class FeishuGateway implements ChannelBot<AgentStreamHandler> {
+  /** Public so `createRenderer` can pass the client to the stream handler. */
+  readonly client: FeishuClient;
+  private agent: Agent;
+  private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
+  private streamHandler: AgentStreamHandler | null = null;
+  private dedup = new MessageDedup();
+  private abortController = new AbortController();
+
+  constructor(
+    client: FeishuClient,
+    agent: Agent,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
+    this.client = client;
+    this.agent = agent;
+    this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
+  }
+
+  setStreamHandler(handler: AgentStreamHandler): void {
+    this.streamHandler = handler;
+  }
+
+  async start(): Promise<void> {
+    this.log("info", "starting WebSocket gateway...");
+    // probe() already called in afterCreate — botOpenId/botName are set.
+    this.log("info", `bot identity: ${this.client.botName} (${this.client.botOpenId})`);
+
+    await this.client.startWS(
+      {
+        "im.message.receive_v1": (data) => this.handleMessage(data),
+        "im.message.message_read_v1": async () => {},
+        "im.message.reaction.created_v1": (data) => this.handleReaction(data),
+        "im.chat.member.bot.added_v1": async () => {
+          this.log("info", "bot added to chat");
+        },
+        "im.chat.member.bot.deleted_v1": async () => {
+          this.log("info", "bot removed from chat");
+        },
+        "card.action.trigger": (data) => this.handleCardAction(data),
+      },
+      this.abortController.signal,
+    );
+  }
+
+  stop(): void {
+    this.abortController.abort();
+  }
+
+  private log(level: string, msg: string): void {
+    process.stderr.write(`[feishu-gateway][${level}] ${msg}\n`);
+  }
+
+  // --------------------------------------------------------------------------
+
+  private async handleMessage(data: unknown): Promise<void> {
+    const event = data as FeishuMessageEvent;
+    const msg = event.message;
+    if (!msg) return;
+
+    const messageId = msg.message_id ?? "";
+    const chatId = msg.chat_id ?? "";
+
+    if (!this.dedup.check(messageId)) return;
+
+    // Discard stale messages (>5 min, from WebSocket reconnect replay)
+    if (msg.create_time) {
+      const createMs = parseInt(msg.create_time, 10);
+      if (!isNaN(createMs) && Date.now() - createMs > 5 * 60 * 1000) return;
+    }
+
+    // Ignore bot's own messages
+    const senderOpenId = event.sender?.sender_id?.open_id ?? "";
+    if (senderOpenId === this.client.botOpenId) return;
+
+    // Build converter context with mentions
+    const mentionsMap = new Map<string, MentionInfo>();
+    const mentionsByOpenId = new Map<string, MentionInfo>();
+
+    if (msg.mentions) {
+      for (const m of msg.mentions) {
+        const openId = m.id?.open_id ?? "";
+        const info: MentionInfo = {
+          key: m.key,
+          openId,
+          name: m.name,
+          isBot: openId === this.client.botOpenId,
+        };
+        mentionsMap.set(m.key, info);
+        if (openId) mentionsByOpenId.set(openId, info);
+      }
+    }
+
+    const ctx: ConvertContext = {
+      mentions: mentionsMap,
+      mentionsByOpenId,
+      messageId,
+      botOpenId: this.client.botOpenId,
+    };
+
+    // Convert message content using the full converter system
+    const result = await convertMessageContent(msg.message_type, msg.content, ctx);
+
+    const mentionedBot = [...mentionsMap.values()].some((mention) => mention.isBot);
+    if (!shouldHandleInboundMessage({
+      chatType: msg.chat_type,
+      mentionedBot,
+    })) {
+      this.log("debug", `group message ignored without bot mention chat=${chatId}`);
+      return;
+    }
+
+    // Download media resources (images, files, etc.)
+    const downloaded: DownloadedResource[] = [];
+    for (const resource of result.resources) {
+      const media = await downloadMessageResource({
+        client: this.client,
+        messageId,
+        resource,
+        cacheDir: this.cacheDir,
+        chatId,
+      });
+      if (media) downloaded.push(media);
+    }
+
+    // Build ACP prompt content blocks
+    const contentBlocks: ContentBlock[] = [];
+
+    if (result.content) {
+      contentBlocks.push({ type: "text", text: result.content });
+    } else if (downloaded.length > 0) {
+      const types = [...new Set(downloaded.map((m) => m.type))].join(", ");
+      contentBlocks.push({ type: "text", text: `The user sent ${types}.` });
+    }
+
+    for (const media of downloaded) {
+      contentBlocks.push({
+        type: "resource_link",
+        uri: pathToFileURL(media.path).href,
+        name: media.fileName ?? path.basename(media.path),
+        mimeType: media.mimeType,
+      });
+    }
+
+    if (contentBlocks.length === 0) return;
+
+    const firstText = contentBlocks[0]?.type === "text" ? contentBlocks[0].text : "";
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.thread_id ?? msg.root_id,
+      senderId: senderOpenId,
+      platformMessageId: messageId,
+      scope: msg.chat_type === "p2p" ? "dm" : "group",
+      addressedBy: msg.chat_type === "p2p" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
+
+    if (firstText && isChannelStopCommand(firstText)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
+
+    // If a permission prompt is awaiting a reply, consume this message instead
+    // of forwarding it to the agent.
+    if (firstText && this.streamHandler?.consumePendingText(target, firstText)) {
+      this.log("info", `consumed text as permission reply chat=${chatId}`);
+      return;
+    }
+
+    this.log("info", `prompt: chat=${chatId} blocks=${contentBlocks.length}`);
+    this.streamHandler?.onPromptSent(target);
+
+    try {
+      const response = await sendChannelPrompt(this.agent, {
+        context: inboundContext,
+        prompt: contentBlocks,
+      });
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
+      this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
+      await this.streamHandler?.onTurnEnd(target);
+    } catch (error: unknown) {
+      const msg = extractErrorMessage(error);
+      this.log("error", `prompt failed chat=${chatId}: ${msg}`);
+      await this.streamHandler?.onTurnError(target, msg);
+    }
+  }
+
+  private async handleReaction(data: unknown): Promise<void> {
+    const event = data as FeishuReactionCreatedEvent;
+    const messageId = event.message_id ?? "";
+    const emoji = event.reaction_type?.emoji_type ?? "";
+    const senderOpenId = event.user_id?.open_id ?? "";
+
+    const dedupKey = `reaction:${messageId}:${emoji}:${senderOpenId}`;
+    if (!this.dedup.check(dedupKey)) return;
+    if (senderOpenId === this.client.botOpenId) return;
+
+    // Reaction events are not forwarded to host.
+  }
+
+  private async handleCardAction(data: unknown): Promise<unknown> {
+    const event = data as {
+      action?: { value?: Record<string, unknown>; tag?: string };
+      operator?: { open_id?: string };
+      // V2 puts chat/message IDs in context, V1 had them at top level
+      context?: {
+        open_chat_id?: string;
+        open_message_id?: string;
+        open_thread_id?: string;
+        chat_type?: "p2p" | "group";
+      };
+      open_chat_id?: string;
+      open_message_id?: string;
+      open_thread_id?: string;
+      chat_type?: "p2p" | "group";
+    };
+
+    const chatId = event.context?.open_chat_id ?? event.open_chat_id ?? "";
+    const messageId = event.context?.open_message_id ?? event.open_message_id;
+    const command = event.action?.value?.command as string | undefined;
+    const callbackKind = event.action?.value?.kind as string | undefined;
+
+    this.log("info", `card action: chat=${chatId} kind=${callbackKind ?? "none"} command=${command ?? "none"}`);
+
+    // Permission button click — route back to the renderer's pending promise,
+    // and return a finalized card (no buttons) directly in the HTTP callback
+    // response so Feishu atomically replaces the original card. This avoids
+    // a separate update-API roundtrip and the race window where the user
+    // could click the same button multiple times.
+    //
+    // Response shape per Feishu V2 card callback docs:
+    //   { toast?: {...}, card?: { type: "raw", data: <cardJson> } }
+    if (callbackKind === "permission" && this.streamHandler) {
+      const callbackId = event.action?.value?.callbackId as string | undefined;
+      const optionId = event.action?.value?.optionId as string | undefined;
+      const optionName =
+        (event.action?.value?.optionName as string | undefined) ?? optionId ?? "";
+      if (callbackId && optionId) {
+        const resolved = this.streamHandler.resolvePermission(callbackId, optionId);
+        this.log(
+          "info",
+          `permission resolve cb=${callbackId} option=${optionId} ok=${resolved}`,
+        );
+        if (resolved) {
+          return {
+            toast: { type: "info", content: `Selected: ${optionName}` },
+            card: {
+              type: "raw",
+              data: this.streamHandler.buildFinalizedPermissionCard(optionName),
+            },
+          };
+        }
+      }
+      // Stale click — inform user but leave the card alone.
+      return {
+        toast: { type: "warning", content: "This request was already handled." },
+      };
+    }
+
+    if (command && chatId) {
+      // Command button clicked — send as a prompt so the host can parse the slash command
+      const contentBlocks: ContentBlock[] = [{ type: "text", text: command }];
+      const inboundContext = {
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId || undefined,
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
+        addressedBy: "callback",
+      } satisfies ChannelInboundContext;
+      const target = channelTargetFromInboundContext(inboundContext);
+      if (isChannelStopCommand(command)) {
+        await cancelChannelPrompt(this.agent, { context: inboundContext });
+        return {};
+      }
+      this.streamHandler?.onPromptSent(target);
+      try {
+        const response = await sendChannelPrompt(this.agent, {
+          context: inboundContext,
+          prompt: contentBlocks,
+        });
+        if (!response) {
+          await this.streamHandler?.onTurnEnd(target);
+          return {};
+        }
+        this.log("info", `card command done chat=${chatId} cmd=${command} stopReason=${response.stopReason}`);
+        await this.streamHandler?.onTurnEnd(target);
+      } catch (error: unknown) {
+        const msg = extractErrorMessage(error);
+        this.log("error", `card command failed chat=${chatId}: ${msg}`);
+        await this.streamHandler?.onTurnError(target, msg);
+      }
+    } else {
+      // Generic callback (non-command button)
+      const callbackContext = createFeishuCallbackContext({
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        chatId,
+        topicId: event.context?.open_thread_id ?? event.open_thread_id,
+        senderId: event.operator?.open_id,
+        platformMessageId: messageId,
+        scope:
+          (event.context?.chat_type ?? event.chat_type) === "p2p"
+            ? "dm"
+            : "group",
+      });
+      this.agent
+        .extNotification?.("_va/callback", {
+          chatId,
+          callbackId: `card_${Date.now()}`,
+          sender: { id: event.operator?.open_id ?? "" },
+          data: serializeFeishuCallbackData(event.action?.value),
+          messageId,
+          "va.channel": callbackContext,
+        })
+        .catch(() => {});
+    }
+    return {};
+  }
+}
